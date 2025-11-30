@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>실시간 리모컨</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+
+        body {
+            background-color: #121212; margin: 0; 
+            height: 100dvh; /* 화면 잘림 방지 */
+            width: 100vw;
+            overflow: hidden; display: flex; flex-direction: column;
+            color: #ccc; font-family: sans-serif; user-select: none;
+        }
+        
+        /* 1. 트랙패드 (나머지 공간 전부) */
+        #main-area {
+            flex: 1; display: flex; width: 100%; border-bottom: 2px solid #333; overflow: hidden; min-height: 0;
+        }
+        #trackpad { flex: 1; height: 100%; background-color: #1e1e1e; display: flex; justify-content: center; align-items: center; }
+        #scrollbar { width: 50px; height: 100%; background-color: #2c2c2c; border-left: 1px solid #333; display: flex; justify-content: center; align-items: center; writing-mode: vertical-rl; font-size: 12px; }
+
+        /* 2. 볼륨 슬라이더 (고정 높이 70px) */
+        #volume-area {
+            height: 70px; flex: none;
+            display: flex; align-items: center; justify-content: center;
+            background-color: #181818; border-bottom: 1px solid #333; padding: 0 20px;
+        }
+        input[type=range] {
+            -webkit-appearance: none; width: 100%; height: 10px;
+            background: #333; border-radius: 5px; outline: none;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none;
+            width: 25px; height: 25px; border-radius: 50%; 
+            background: #4dabf7; cursor: pointer;
+        }
+
+        /* 3. 버튼들 (고정 높이 120px - 2줄이니까 넉넉하게) */
+        #controls {
+            height: 120px; flex: none;
+            display: grid; 
+            grid-template-columns: 1fr 1fr 1fr 1fr; 
+            grid-template-rows: 1fr 1fr;
+            gap: 1px; background-color: #000; padding: 1px;
+            /* 아이폰 하단 바 안전 영역 */
+            padding-bottom: env(safe-area-inset-bottom, 5px); 
+        }
+        .btn { background-color: #333; border: none; color: white; font-size: 16px; font-weight: bold; }
+        .btn:active { background-color: #555; }
+        .blue-btn { color: #4dabf7; }
+        .red-btn { color: #ff4d4d; background-color: #300000; }
+        
+        /* 숨겨진 입력창 (화면 밖으로 보냄) */
+        #hiddenInput { position: absolute; opacity: 0; top: -1000px; }
+    </style>
+</head>
+<body>
+    <div id="main-area">
+        <div id="trackpad">마우스 / 터치</div>
+        <div id="scrollbar">스크롤</div>
+    </div>
+
+    <div id="volume-area">
+        <span style="margin-right:10px">🔉</span>
+        <input type="range" id="volSlider" min="0" max="100" value="50">
+        <span style="margin-left:10px">🔊</span>
+    </div>
+
+    <div id="controls">
+        <button class="btn" onclick="toggleKeyboard()">⌨️ KBD</button>
+        <button class="btn blue-btn" onclick="sendMacro('hangul')">한/영</button>
+        <button class="btn" onclick="sendMacro('space')">⏯ Space</button>
+        <button class="btn" onclick="sendMacro('backspace')">← BKSP</button>
+        
+        <button class="btn" onclick="location.reload()">🔄 F5</button>
+        <button class="btn" onclick="sendMacro('enter')">↵ Enter</button>
+        <button class="btn" style="font-size:12px" onclick="alert('버전: 실시간 입력')">ℹ️ Info</button>
+        <button class="btn red-btn" onclick="confirmShutdown()">OFF</button>
+    </div>
+
+    <input type="text" id="hiddenInput" autocomplete="off">
+
+    <script>
+        var socket = io();
+        
+        // === [실시간 키보드 로직 복구] ===
+        var hiddenInput = document.getElementById('hiddenInput');
+        
+        function toggleKeyboard() {
+            hiddenInput.focus();
+            hiddenInput.click();
+        }
+        
+        // 글자가 입력되는 순간 바로 전송하고 비움
+        hiddenInput.addEventListener('input', function(e) {
+            // e.data에 입력된 글자가 들어있음 (없으면 value에서 가져옴)
+            var char = e.data || this.value.slice(-1); 
+            
+            if(char) {
+                socket.emit('keyboard_input', {text: char});
+            }
+            
+            // 입력창 비우기 (폰 화면에서는 글자가 안 모이고 계속 사라지는 게 정상입니다!)
+            this.value = ''; 
+        });
+        
+        // 모바일 키보드의 엔터/백스페이스 감지
+        hiddenInput.addEventListener('keydown', function(e) {
+            if(e.key === 'Enter') {
+                socket.emit('macro_action', {command: 'enter'});
+            } else if (e.key === 'Backspace') {
+                // input 이벤트로 처리가 안 될 경우를 대비한 백스페이스
+                socket.emit('macro_action', {command: 'backspace'});
+            }
+        });
+
+        // === [볼륨 슬라이더] ===
+        var volSlider = document.getElementById('volSlider');
+        var lastVol = 50;
+        volSlider.addEventListener('input', function() {
+            var currentVol = this.value;
+            if (currentVol > lastVol) socket.emit('macro_action', {command: 'vol_up'});
+            else if (currentVol < lastVol) socket.emit('macro_action', {command: 'vol_down'});
+            if(navigator.vibrate) navigator.vibrate(5);
+            lastVol = currentVol;
+        });
+        volSlider.addEventListener('touchend', function() { this.value = 50; lastVol = 50; });
+
+        // === [마우스 로직] ===
+        var lastX=0, lastY=0, scrollLastY=0;
+        var sensitivity = 2.5;
+        var touchStartTime=0, isDragging=false, maxFingers=0;
+        var trackpad = document.getElementById('trackpad');
+        
+        trackpad.addEventListener('touchstart', function(e) {
+            lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+            touchStartTime = new Date().getTime(); isDragging = false; maxFingers = e.touches.length;
+        }, {passive: false});
+        trackpad.addEventListener('touchmove', function(e) {
+            e.preventDefault(); isDragging = true; maxFingers = Math.max(maxFingers, e.touches.length);
+            var cx = e.touches[0].clientX; var cy = e.touches[0].clientY;
+            socket.emit('mouse_move', {x:(cx-lastX)*sensitivity, y:(cy-lastY)*sensitivity});
+            lastX = cx; lastY = cy;
+        }, {passive: false});
+        trackpad.addEventListener('touchend', function(e) {
+            if (new Date().getTime() - touchStartTime < 250 && !isDragging) {
+                socket.emit('mouse_click', {type: maxFingers===2?'right':'left'});
+                if(navigator.vibrate) navigator.vibrate(30);
+            }
+        });
+
+        var scrollbar = document.getElementById('scrollbar');
+        scrollbar.addEventListener('touchstart', function(e){ scrollLastY = e.touches[0].clientY; }, {passive: false});
+        scrollbar.addEventListener('touchmove', function(e) {
+            e.preventDefault();
+            var cy = e.touches[0].clientY;
+            socket.emit('mouse_scroll', {dy: cy - scrollLastY});
+            scrollLastY = cy;
+        }, {passive: false});
+
+        function sendMacro(cmd) {
+            socket.emit('macro_action', {command: cmd});
+            if(navigator.vibrate) navigator.vibrate(30);
+        }
+        function confirmShutdown() {
+            if(confirm("PC를 끕니다?")) sendMacro('shutdown');
+        }
+    </script>
+</body>
+</html>
